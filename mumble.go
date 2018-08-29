@@ -68,7 +68,7 @@ func (m *MumbleClient) Connect() error {
 	if channel != nil {
 		m.client.Self.Move(channel)
 	}
-	m.client.Self.SetDeafened(false)
+	//m.client.Self.SetDeafened(false)
 
 	m.link = m.config.AttachAudio(m)
 
@@ -76,7 +76,11 @@ func (m *MumbleClient) Connect() error {
 }
 
 func (m *MumbleClient) Disconnect() error {
-	return m.client.Disconnect()
+	if m.client != nil {
+		return m.client.Disconnect()
+	}
+
+	return nil
 }
 
 func (m *MumbleClient) OnAudioStream(e *gumble.AudioStreamEvent) {

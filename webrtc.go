@@ -27,22 +27,7 @@ func NewPC(offerSd string, onStateChange func(connectionState ice.ConnectionStat
 		return nil, err
 	}
 
-	// Set the handler for ICE connection state
-	// This will notify you when the peer has connected/disconnected
-	//	pc.OnICEConnectionStateChange = func(connectionState ice.ConnectionState) {
-	//		log.Printf("Connection State has changed %s \n", connectionState.String())
-	//	}
 	pc.OnICEConnectionStateChange = onStateChange
-
-	// Create a audio track
-	opusTrack, err := pc.NewRTCTrack(webrtc.DefaultPayloadTypeOpus, "audio", "mumble")
-	if err != nil {
-		return nil, err
-	}
-	_, err = pc.AddTrack(opusTrack)
-	if err != nil {
-		return nil, err
-	}
 
 	// Set the remote SessionDescription
 	offer := webrtc.RTCSessionDescription{
@@ -53,7 +38,23 @@ func NewPC(offerSd string, onStateChange func(connectionState ice.ConnectionStat
 		return nil, err
 	}
 
-	peer := &WebRTCPeer{pc: pc, track: opusTrack}
+	peer := &WebRTCPeer{pc: pc}
 
 	return peer, nil
+}
+
+func (p *WebRTCPeer) AddTrack() error {
+	// Create a audio track
+	opusTrack, err := p.pc.NewRTCTrack(webrtc.DefaultPayloadTypeOpus, "audio", "mumble")
+	if err != nil {
+		return err
+	}
+	_, err = p.pc.AddTrack(opusTrack)
+	if err != nil {
+		return err
+	}
+
+	p.track = opusTrack
+
+	return nil
 }

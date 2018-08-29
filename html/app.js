@@ -27,9 +27,9 @@ $(function(){
 			params.SessionDescription = pc.localDescription.sdp;
 			var val = {Key: 'connect', Value: params};
 			ws.send(JSON.stringify(val));
-			log("Connecting to host");
+			log("js: Connecting to host");
 		} else {
-			log("socket not ready");
+			log("WS socket not ready");
 		}
 	});
 
@@ -56,7 +56,7 @@ $(function(){
 	};
 
 	ws.onclose = function()	{
-		log("Connection closed");
+		log("WS connection closed");
 	};
 
 
@@ -85,7 +85,7 @@ $(function(){
 		$("#output-media").append(el);
 	}
 
-	pc.oniceconnectionstatechange = e => log(pc.iceConnectionState)
+	pc.oniceconnectionstatechange = e => log("js: rtc state change, " + pc.iceConnectionState)
 	pc.onicecandidate = event => {
 		if (event.candidate === null) {
 			//document.getElementById('localSessionDescription').value = btoa(pc.localDescription.sdp)

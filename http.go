@@ -11,7 +11,7 @@ import (
 	"github.com/pions/webrtc/pkg/ice"
 )
 
-const PingInterval = 30 * time.Second
+const PingInterval = 10 * time.Second
 const WriteWait = 10 * time.Second
 
 var upgrader = websocket.Upgrader{
@@ -32,25 +32,16 @@ type CmdConnect struct {
 	SessionDescription string
 }
 
-type WSConn struct {
-	*websocket.Conn
-}
-
-type wsHandler struct {
+type Conn struct {
 	peer   *WebRTCPeer
-	conn   WSConn
+	conn   *websocket.Conn
 	mumble *MumbleClient
 
 	errChan  chan error
 	infoChan chan string
 }
 
-func NewWSHandler() *wsHandler {
-	h := &wsHandler{}
-	h.errChan = make(chan error)
-	h.infoChan = make(chan string)
-	return h
-}
+type wsHandler struct{}
 
 func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
@@ -59,35 +50,43 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
-	log.Printf("ws client connected %s\n", gconn.RemoteAddr())
+	log.Printf("WS: client connected %s\n", gconn.RemoteAddr())
 
+	quitChan := make(chan struct{})
+
+	c := &Conn{}
+	c.errChan = make(chan error)
+	c.infoChan = make(chan string)
 	// wrap Gorilla conn with our conn so we can extend functionality
-	h.conn = WSConn{gconn}
-	defer h.conn.Close()
+	c.conn = gconn
+	defer c.conn.Close()
 
 	// TODO handle errors better
 	go func() {
 		for {
 			select {
-			case err := <-h.errChan:
+			case <-quitChan:
+				log.Printf("error goroutine quitting...\n")
+				return
+			case err := <-c.errChan:
 				log.Printf("errChan %s\n", err)
 				j, err := json.Marshal(err.Error())
 				if err != nil {
 					log.Printf("marshal err %s\n", err)
 				}
 				m := Msg{Key: "error", Value: j}
-				err = h.conn.writeMsg(m)
+				err = c.writeMsg(m)
 				if err != nil {
 					log.Printf("writemsg err %s\n", err)
 				}
-			case info := <-h.infoChan:
+			case info := <-c.infoChan:
 				log.Printf("infoChan %s\n", info)
 				j, err := json.Marshal(info)
 				if err != nil {
 					log.Printf("marshal err %s\n", err)
 				}
 				m := Msg{Key: "info", Value: j}
-				err = h.conn.writeMsg(m)
+				err = c.writeMsg(m)
 				if err != nil {
 					log.Printf("writemsg err %s\n", err)
 				}
@@ -97,12 +96,15 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// setup ping/pong to keep connection open
 	go func() {
-		c := time.Tick(PingInterval)
+		pingCh := time.Tick(PingInterval)
 		for {
 			select {
-			case <-c:
+			case <-quitChan:
+				log.Printf("ws ping goroutine quitting...\n")
+				return
+			case <-pingCh:
 				// WriteControl can be called concurrently
-				if err := h.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait)); err != nil {
+				if err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait)); err != nil {
 					log.Printf("WS: ping client, err %s\n", err)
 					return
 				}
@@ -111,10 +113,10 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		msgType, raw, err := h.conn.ReadMessage()
+		msgType, raw, err := c.conn.ReadMessage()
 		if err != nil {
 			log.Printf("WS: ReadMessage err %s\n", err)
-			continue
+			break
 		}
 
 		log.Printf("WS: read message %s\n", string(raw))
@@ -123,7 +125,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			var msg Msg
 			err = json.Unmarshal(raw, &msg)
 			if err != nil {
-				h.errChan <- err
+				c.errChan <- err
 				continue
 			}
 
@@ -131,68 +133,69 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				conn := CmdConnect{}
 				err = json.Unmarshal(msg.Value, &conn)
 				if err != nil {
-					h.errChan <- err
+					c.errChan <- err
 					continue
 				}
-				err := h.connectHandler(conn)
+				err := c.connectHandler(conn)
 				if err != nil {
 					log.Printf("connectHandler error: %s\n", err)
-					h.errChan <- err
+					c.errChan <- err
 					continue
 				}
 			}
 
 		} else {
 			log.Printf("unknown message type - close websocket\n")
-			continue
+			break
 		}
-		log.Printf("WS end main loop\n")
 	}
+	close(quitChan)
+	log.Printf("WS: end handler\n")
 }
 
-func (c *WSConn) writeMsg(val interface{}) error {
+func (c *Conn) writeMsg(val interface{}) error {
 	j, err := json.Marshal(val)
 	if err != nil {
 		return err
 	}
 	log.Printf("WS: write message %s\n", string(j))
-	if err = c.WriteMessage(websocket.TextMessage, j); err != nil {
+	if err = c.conn.WriteMessage(websocket.TextMessage, j); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (h *wsHandler) connectHandler(conn CmdConnect) error {
+func (c *Conn) connectHandler(conn CmdConnect) error {
 	var err error
 
-	h.mumble = &MumbleClient{}
-	h.mumble.logChan = h.infoChan
+	c.mumble = &MumbleClient{}
+	c.mumble.logChan = c.infoChan
 	if conn.Username == "" {
 		return fmt.Errorf("username cannot be empty")
 	}
-	h.mumble.Username = conn.Username
+	c.mumble.Username = conn.Username
 	if conn.Hostname == "" {
 		return fmt.Errorf("hostname cannot be empty")
 	}
-	h.mumble.Hostname = conn.Hostname
+	c.mumble.Hostname = conn.Hostname
 	if conn.Port == 0 {
 		conn.Port = MumbleDefaultPort
 	}
-	h.mumble.Port = conn.Port
+	c.mumble.Port = conn.Port
 	if conn.Channel == "" {
 		return fmt.Errorf("channel cannot be empty")
 	}
-	h.mumble.Channel = conn.Channel
+	c.mumble.Channel = conn.Channel
 
 	offer := conn.SessionDescription
-	h.peer, err = NewPC(offer, h.rtcStateChangeHandler)
+	c.peer, err = NewPC(offer, c.rtcStateChangeHandler)
 	if err != nil {
 		return err
 	}
 
 	// Sets the LocalDescription, and starts our UDP listeners
-	answer, err := h.peer.pc.CreateAnswer(nil)
+	answer, err := c.peer.pc.CreateAnswer(nil)
 	if err != nil {
 		return err
 	}
@@ -201,16 +204,16 @@ func (h *wsHandler) connectHandler(conn CmdConnect) error {
 	if err != nil {
 		return err
 	}
-	err = h.conn.writeMsg(Msg{Key: "sd_answer", Value: j})
+	err = c.writeMsg(Msg{Key: "sd_answer", Value: j})
 	if err != nil {
 		return err
 	}
 
 	for {
 		select {
-		case s := <-h.mumble.opusChan:
+		case s := <-c.mumble.opusChan:
 			fmt.Printf("opusChan s %d\n", len(s.Data))
-			h.peer.track.Samples <- s
+			c.peer.track.Samples <- s
 		}
 	}
 
@@ -218,29 +221,35 @@ func (h *wsHandler) connectHandler(conn CmdConnect) error {
 }
 
 // WebRTC callback function
-func (h *wsHandler) rtcStateChangeHandler(connectionState ice.ConnectionState) {
+func (c *Conn) rtcStateChangeHandler(connectionState ice.ConnectionState) {
 
 	var err error
 
 	switch connectionState {
 	case ice.ConnectionStateConnected:
-		log.Printf("ice connected, config %s\n", h.peer.pc.RemoteDescription().Sdp)
+		log.Printf("ice connected, config %s\n", c.peer.pc.RemoteDescription().Sdp)
 
-		if h.mumble.IsConnected() {
-			h.errChan <- fmt.Errorf("mumble client already connected")
+		if c.mumble.IsConnected() {
+			c.errChan <- fmt.Errorf("mumble client already connected")
 			return
 		}
 
-		err = h.mumble.Connect()
+		err = c.mumble.Connect()
 		if err != nil {
-			h.errChan <- err
+			c.errChan <- err
+			return
+		}
+
+		err = c.peer.AddTrack()
+		if err != nil {
+			c.errChan <- err
 			return
 		}
 	case ice.ConnectionStateDisconnected:
 		log.Printf("ice disconnected\n")
-		err = h.mumble.Disconnect()
+		err = c.mumble.Disconnect()
 		if err != nil {
-			h.errChan <- err
+			c.errChan <- err
 			return
 		}
 	}
