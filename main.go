@@ -16,7 +16,7 @@ func main() {
 	log.Printf("Starting server...\n")
 	log.Printf("Set web root: %s\n", *webRoot)
 
-	h := &wsHandler{}
+	h := NewWSHandler()
 	http.Handle("/websocket", h)
 
 	http.Handle("/", http.FileServer(http.Dir(*webRoot)))

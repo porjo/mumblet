@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -37,8 +38,17 @@ type WSConn struct {
 }
 
 type wsHandler struct {
-	pc   *webrtc.RTCPeerConnection
-	conn WSConn
+	pc     *webrtc.RTCPeerConnection
+	conn   WSConn
+	mumble *MumbleClient
+
+	errChan chan error
+}
+
+func NewWSHandler() *wsHandler {
+	h := &wsHandler{}
+	h.errChan = make(chan error)
+	return h
 }
 
 func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +62,27 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// wrap Gorilla conn with our conn so we can extend functionality
 	h.conn = WSConn{gconn}
+	defer h.conn.Close()
+
+	// TODO handle errors better
+	go func() {
+		var err error
+		for {
+			select {
+			case err = <-h.errChan:
+				log.Printf("errChan %s\n", err)
+				j, err := json.Marshal(err.Error())
+				if err != nil {
+					log.Printf("marshal err %s\n", err)
+				}
+				m := Msg{Key: "error", Value: j}
+				err = h.conn.writeMsg(m)
+				if err != nil {
+					log.Printf("writemsg err %s\n", err)
+				}
+			}
+		}
+	}()
 
 	// setup ping/pong to keep connection open
 	go func() {
@@ -72,7 +103,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		msgType, raw, err := h.conn.ReadMessage()
 		if err != nil {
 			log.Printf("WS: ReadMessage err %s\n", err)
-			return
+			continue
 		}
 
 		log.Printf("WS: read message %s\n", string(raw))
@@ -81,27 +112,28 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			var msg Msg
 			err = json.Unmarshal(raw, &msg)
 			if err != nil {
-				log.Printf("json unmarshal error: %s\n", err)
-				return
+				h.errChan <- err
+				continue
 			}
 
 			if msg.Key == "connect" {
 				conn := CmdConnect{}
 				err = json.Unmarshal(msg.Value, &conn)
 				if err != nil {
-					log.Println(err)
-					return
+					h.errChan <- err
+					continue
 				}
 				err := h.connectHandler(conn)
 				if err != nil {
 					log.Printf("connectHandler error: %s\n", err)
-					return
+					h.errChan <- err
+					continue
 				}
 			}
+
 		} else {
 			log.Printf("unknown message type - close websocket\n")
-			h.conn.Close()
-			return
+			continue
 		}
 		log.Printf("WS end main loop\n")
 	}
@@ -123,6 +155,24 @@ func (c *WSConn) writeMsg(val interface{}) error {
 func (h *wsHandler) connectHandler(conn CmdConnect) error {
 	var err error
 
+	h.mumble = &MumbleClient{}
+	if conn.Username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	h.mumble.Username = conn.Username
+	if conn.Hostname == "" {
+		return fmt.Errorf("hostname cannot be empty")
+	}
+	h.mumble.Hostname = conn.Hostname
+	if conn.Port == 0 {
+		conn.Port = MumbleDefaultPort
+	}
+	h.mumble.Port = conn.Port
+	if conn.Channel == "" {
+		return fmt.Errorf("channel cannot be empty")
+	}
+
+	h.mumble.Channel = conn.Channel
 	offer := conn.SessionDescription
 	h.pc, err = NewPC(offer, h.rtcStateChangeHandler)
 	if err != nil {
@@ -147,11 +197,26 @@ func (h *wsHandler) connectHandler(conn CmdConnect) error {
 	return nil
 }
 
+// WebRTC callback function
 func (h *wsHandler) rtcStateChangeHandler(connectionState ice.ConnectionState) {
+
+	var err error
 
 	switch connectionState {
 	case ice.ConnectionStateConnected:
 		log.Printf("connected, config %s\n", h.pc.RemoteDescription().Sdp)
+		log.Printf("mumbleclient %v\n", h.mumble)
+
+		if h.mumble.IsConnected() {
+			h.errChan <- fmt.Errorf("mumble client already connected")
+			return
+		}
+
+		err = h.mumble.Connect()
+		if err != nil {
+			h.errChan <- err
+			return
+		}
 	case ice.ConnectionStateDisconnected:
 		log.Printf("disconnected\n")
 	}
