@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pions/webrtc"
+	"github.com/pions/webrtc/pkg/ice"
 )
 
 const PingInterval = 30 * time.Second
@@ -25,7 +24,7 @@ type Msg struct {
 	Value json.RawMessage
 }
 
-type Connect struct {
+type CmdConnect struct {
 	Hostname           string
 	Port               int
 	Username           string
@@ -33,18 +32,16 @@ type Connect struct {
 	SessionDescription string
 }
 
-type Conn struct {
+type WSConn struct {
 	*websocket.Conn
 }
 
 type wsHandler struct {
-	WebRoot string
-	pc      *webrtc.RTCPeerConnection
-
-	conn Conn
+	pc   *webrtc.RTCPeerConnection
+	conn WSConn
 }
 
-func (ws *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	gconn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -54,7 +51,7 @@ func (ws *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Client connected %s\n", gconn.RemoteAddr())
 
 	// wrap Gorilla conn with our conn so we can extend functionality
-	ws.conn = Conn{gconn}
+	h.conn = WSConn{gconn}
 
 	// setup ping/pong to keep connection open
 	go func() {
@@ -63,7 +60,7 @@ func (ws *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-c:
 				// WriteControl can be called concurrently
-				if err := ws.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait)); err != nil {
+				if err := h.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait)); err != nil {
 					log.Printf("WS: ping client, err %s\n", err)
 					return
 				}
@@ -72,7 +69,7 @@ func (ws *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		msgType, raw, err := ws.conn.ReadMessage()
+		msgType, raw, err := h.conn.ReadMessage()
 		if err != nil {
 			log.Printf("WS: ReadMessage err %s\n", err)
 			return
@@ -89,13 +86,13 @@ func (ws *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if msg.Key == "connect" {
-				conn := Connect{}
+				conn := CmdConnect{}
 				err = json.Unmarshal(msg.Value, &conn)
 				if err != nil {
 					log.Println(err)
 					return
 				}
-				err := ws.connectHandler(conn)
+				err := h.connectHandler(conn)
 				if err != nil {
 					log.Printf("connectHandler error: %s\n", err)
 					return
@@ -103,14 +100,14 @@ func (ws *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			log.Printf("unknown message type - close websocket\n")
-			ws.conn.Close()
+			h.conn.Close()
 			return
 		}
 		log.Printf("WS end main loop\n")
 	}
 }
 
-func (c *Conn) writeMsg(val interface{}) error {
+func (c *WSConn) writeMsg(val interface{}) error {
 	j, err := json.Marshal(val)
 	if err != nil {
 		return err
@@ -123,38 +120,39 @@ func (c *Conn) writeMsg(val interface{}) error {
 	return nil
 }
 
-func (ws *wsHandler) connectHandler(conn Connect) error {
+func (h *wsHandler) connectHandler(conn CmdConnect) error {
 	var err error
 
-	fmt.Printf("connmsg %+v\n", conn)
-
-	var offer []byte
-	offer, err = base64.StdEncoding.DecodeString(conn.SessionDescription)
-	if err != nil {
-		return err
-	}
-	ws.pc, err = NewPC(string(offer))
+	offer := conn.SessionDescription
+	h.pc, err = NewPC(offer, h.rtcStateChangeHandler)
 	if err != nil {
 		return err
 	}
 
 	// Sets the LocalDescription, and starts our UDP listeners
-	answer, err := ws.pc.CreateAnswer(nil)
+	answer, err := h.pc.CreateAnswer(nil)
 	if err != nil {
 		return err
 	}
 
-	// Get the LocalDescription and take it to base64 so we can paste in browser
-	answerb64 := base64.StdEncoding.EncodeToString([]byte(answer.Sdp))
-
-	j, err := json.Marshal(answerb64)
+	j, err := json.Marshal(answer.Sdp)
 	if err != nil {
 		return err
 	}
-	err = ws.conn.writeMsg(Msg{Key: "sd_answer", Value: j})
+	err = h.conn.writeMsg(Msg{Key: "sd_answer", Value: j})
 	if err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func (h *wsHandler) rtcStateChangeHandler(connectionState ice.ConnectionState) {
+
+	switch connectionState {
+	case ice.ConnectionStateConnected:
+		log.Printf("connected, config %s\n", h.pc.RemoteDescription().Sdp)
+	case ice.ConnectionStateDisconnected:
+		log.Printf("disconnected\n")
+	}
 }

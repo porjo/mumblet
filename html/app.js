@@ -24,7 +24,7 @@ $(function(){
 			params.Port = Number($("#port").val());
 			params.Username = $("#username").val();
 			params.Channel = $("#channel").val();
-			params.SessionDescription = btoa(pc.localDescription.sdp);
+			params.SessionDescription = pc.localDescription.sdp;
 			var val = {Key: 'connect', Value: params};
 			ws.send(JSON.stringify(val));
 			log("Connecting to host");
@@ -45,23 +45,8 @@ $(function(){
 				case 'error':
 					log("Error: " + msg.Value);
 					break;
-				case 'progress':
-					var pct = parseFloat(msg.Value.Pct);
-					$("#progress-bar > span").css("width", pct + "%")
-						.text(pct + "%");
-					$("#eta").text( msg.Value.ETA );
-					break;
-				case 'info':
-					$("#title").text( msg.Value.Title );
-					var bytes = parseFloat(msg.Value.FileSize)
-					$("#filesize").text( (bytes / 1024 / 1024).toFixed(2) + " MB" );
-					break;
-				case 'link':
-					$("#link").attr('href', encodeURI(msg.Value.DownloadURL))
-						.css('display', 'inline-block');
-					break;
 				case 'sd_answer':
-					connectRTC(atob(msg.Value));
+					connectRTC(msg.Value);
 					break;
 			}
 		}
@@ -105,7 +90,7 @@ $(function(){
 	}
 
 	pc.createOffer({
-		offerToReceiveVideo: true, 
+	//	offerToReceiveVideo: true, 
 		offerToReceiveAudio: true
 	}).then(d => pc.setLocalDescription(d)).catch(log)
 
