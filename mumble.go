@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
+	"net"
+	"strconv"
 
+	"github.com/pions/webrtc"
 	"layeh.com/gumble/gumble"
 	"layeh.com/gumble/gumbleutil"
 )
@@ -18,6 +22,11 @@ type MumbleClient struct {
 
 	client *gumble.Client
 	config *gumble.Config
+
+	logChan  chan string
+	opusChan chan webrtc.RTCSample
+
+	link gumble.Detacher
 }
 
 func (m *MumbleClient) IsConnected() bool {
@@ -25,7 +34,6 @@ func (m *MumbleClient) IsConnected() bool {
 }
 
 func (m *MumbleClient) Connect() error {
-
 	var err error
 	m.config = gumble.NewConfig()
 	m.config.Username = m.Username
@@ -34,19 +42,49 @@ func (m *MumbleClient) Connect() error {
 
 	m.config.Attach(gumbleutil.Listener{
 		TextMessage: func(e *gumble.TextMessageEvent) {
-			fmt.Printf("Received text message: %s\n", e.Message)
+			m.logChan <- e.Message
 		},
 		Connect: func(e *gumble.ConnectEvent) {
-			fmt.Printf("mumble client connected message: %s\n", e.WelcomeMessage)
+			m.logChan <- fmt.Sprintf("mumble client connected message: %s", *e.WelcomeMessage)
+		},
+		Disconnect: func(e *gumble.DisconnectEvent) {
+			m.logChan <- fmt.Sprint("mumble client disconnected message")
 		},
 	})
 
 	// Connect to the server:
+	port := strconv.Itoa(m.Port)
+	host := m.Hostname + ":" + port
 
-	m.client, err = gumble.Dial(m.Hostname+":"+string(m.Port), m.config)
+	//m.client, err = gumble.Dial(host, m.config)
+	// FIXME accept self-signed
+	tlsConfig := &tls.Config{InsecureSkipVerify: true}
+	m.client, err = gumble.DialWithDialer(&net.Dialer{}, host, m.config, tlsConfig)
 	if err != nil {
 		return err
 	}
 
+	channel := m.client.Channels.Find(m.Channel)
+	if channel != nil {
+		m.client.Self.Move(channel)
+	}
+	m.client.Self.SetDeafened(false)
+
+	m.link = m.config.AttachAudio(m)
+
 	return nil
+}
+
+func (m *MumbleClient) Disconnect() error {
+	return m.client.Disconnect()
+}
+
+func (m *MumbleClient) OnAudioStream(e *gumble.AudioStreamEvent) {
+	fmt.Printf("onaudiostream \n")
+
+	for p := range e.C {
+		fmt.Printf("audio c range %d\n", len(p.OpusBuffer))
+		rtcSample := webrtc.RTCSample{Data: p.OpusBuffer, Samples: p.OpusSamples}
+		m.opusChan <- rtcSample
+	}
 }

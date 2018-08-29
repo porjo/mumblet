@@ -5,7 +5,12 @@ import (
 	"github.com/pions/webrtc/pkg/ice"
 )
 
-func NewPC(offerSd string, onStateChange func(connectionState ice.ConnectionState)) (*webrtc.RTCPeerConnection, error) {
+type WebRTCPeer struct {
+	pc    *webrtc.RTCPeerConnection
+	track *webrtc.RTCTrack
+}
+
+func NewPC(offerSd string, onStateChange func(connectionState ice.ConnectionState)) (*WebRTCPeer, error) {
 	// Setup the codecs you want to use.
 	// We'll use the default ones but you can also define your own
 	webrtc.RegisterDefaultCodecs()
@@ -30,7 +35,7 @@ func NewPC(offerSd string, onStateChange func(connectionState ice.ConnectionStat
 	pc.OnICEConnectionStateChange = onStateChange
 
 	// Create a audio track
-	opusTrack, err := pc.NewRTCTrack(webrtc.DefaultPayloadTypeOpus, "audio", "pion1")
+	opusTrack, err := pc.NewRTCTrack(webrtc.DefaultPayloadTypeOpus, "audio", "mumble")
 	if err != nil {
 		return nil, err
 	}
@@ -48,5 +53,7 @@ func NewPC(offerSd string, onStateChange func(connectionState ice.ConnectionStat
 		return nil, err
 	}
 
-	return pc, nil
+	peer := &WebRTCPeer{pc: pc, track: opusTrack}
+
+	return peer, nil
 }

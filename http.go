@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pions/webrtc"
 	"github.com/pions/webrtc/pkg/ice"
 )
 
@@ -38,16 +37,18 @@ type WSConn struct {
 }
 
 type wsHandler struct {
-	pc     *webrtc.RTCPeerConnection
+	peer   *WebRTCPeer
 	conn   WSConn
 	mumble *MumbleClient
 
-	errChan chan error
+	errChan  chan error
+	infoChan chan string
 }
 
 func NewWSHandler() *wsHandler {
 	h := &wsHandler{}
 	h.errChan = make(chan error)
+	h.infoChan = make(chan string)
 	return h
 }
 
@@ -58,7 +59,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
-	log.Printf("Client connected %s\n", gconn.RemoteAddr())
+	log.Printf("ws client connected %s\n", gconn.RemoteAddr())
 
 	// wrap Gorilla conn with our conn so we can extend functionality
 	h.conn = WSConn{gconn}
@@ -66,16 +67,26 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// TODO handle errors better
 	go func() {
-		var err error
 		for {
 			select {
-			case err = <-h.errChan:
+			case err := <-h.errChan:
 				log.Printf("errChan %s\n", err)
 				j, err := json.Marshal(err.Error())
 				if err != nil {
 					log.Printf("marshal err %s\n", err)
 				}
 				m := Msg{Key: "error", Value: j}
+				err = h.conn.writeMsg(m)
+				if err != nil {
+					log.Printf("writemsg err %s\n", err)
+				}
+			case info := <-h.infoChan:
+				log.Printf("infoChan %s\n", info)
+				j, err := json.Marshal(info)
+				if err != nil {
+					log.Printf("marshal err %s\n", err)
+				}
+				m := Msg{Key: "info", Value: j}
 				err = h.conn.writeMsg(m)
 				if err != nil {
 					log.Printf("writemsg err %s\n", err)
@@ -156,6 +167,7 @@ func (h *wsHandler) connectHandler(conn CmdConnect) error {
 	var err error
 
 	h.mumble = &MumbleClient{}
+	h.mumble.logChan = h.infoChan
 	if conn.Username == "" {
 		return fmt.Errorf("username cannot be empty")
 	}
@@ -171,16 +183,16 @@ func (h *wsHandler) connectHandler(conn CmdConnect) error {
 	if conn.Channel == "" {
 		return fmt.Errorf("channel cannot be empty")
 	}
-
 	h.mumble.Channel = conn.Channel
+
 	offer := conn.SessionDescription
-	h.pc, err = NewPC(offer, h.rtcStateChangeHandler)
+	h.peer, err = NewPC(offer, h.rtcStateChangeHandler)
 	if err != nil {
 		return err
 	}
 
 	// Sets the LocalDescription, and starts our UDP listeners
-	answer, err := h.pc.CreateAnswer(nil)
+	answer, err := h.peer.pc.CreateAnswer(nil)
 	if err != nil {
 		return err
 	}
@@ -194,6 +206,14 @@ func (h *wsHandler) connectHandler(conn CmdConnect) error {
 		return err
 	}
 
+	for {
+		select {
+		case s := <-h.mumble.opusChan:
+			fmt.Printf("opusChan s %d\n", len(s.Data))
+			h.peer.track.Samples <- s
+		}
+	}
+
 	return nil
 }
 
@@ -204,8 +224,7 @@ func (h *wsHandler) rtcStateChangeHandler(connectionState ice.ConnectionState) {
 
 	switch connectionState {
 	case ice.ConnectionStateConnected:
-		log.Printf("connected, config %s\n", h.pc.RemoteDescription().Sdp)
-		log.Printf("mumbleclient %v\n", h.mumble)
+		log.Printf("ice connected, config %s\n", h.peer.pc.RemoteDescription().Sdp)
 
 		if h.mumble.IsConnected() {
 			h.errChan <- fmt.Errorf("mumble client already connected")
@@ -218,6 +237,11 @@ func (h *wsHandler) rtcStateChangeHandler(connectionState ice.ConnectionState) {
 			return
 		}
 	case ice.ConnectionStateDisconnected:
-		log.Printf("disconnected\n")
+		log.Printf("ice disconnected\n")
+		err = h.mumble.Disconnect()
+		if err != nil {
+			h.errChan <- err
+			return
+		}
 	}
 }

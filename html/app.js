@@ -42,6 +42,9 @@ $(function(){
 		var msg = JSON.parse(e.data);
 		if( 'Key' in msg ) {
 			switch (msg.Key) {
+				case 'info':
+					log("Info: " + msg.Value);
+					break;
 				case 'error':
 					log("Error: " + msg.Value);
 					break;
