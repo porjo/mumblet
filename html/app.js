@@ -16,10 +16,16 @@ var sd_uri = loc.protocol + "//" + loc.host + path + "/sdp";
 
 $(function(){
 
+	$("#advanced-toggle").click(function() {
+		$(this).find(".text").toggleClass('hidden');
+		$("#advanced-form").slideToggle();
+	});
+
 	$("#connect-button").click(function() {
 		if (ws.readyState === 1) {
 			$("#output").show();
 			var params = {};
+			params.Url = $("#url").val();
 			params.Hostname = $("#hostname").val();
 			params.Port = Number($("#port").val());
 			params.Username = $("#username").val();

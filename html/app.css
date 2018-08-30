@@ -47,6 +47,7 @@ h1 {
 
 #input-form th {
 	text-align: right;
+	vertical-align: middle;
 	padding-right: 10px;
 	padding-bottom: 10px;
 }
@@ -81,4 +82,20 @@ h1 {
 	margin: 10px 0;
 	padding: 10px;
 	display: none;
+}
+
+#advanced-toggle {
+	color: #999;
+	font-size: 0.8em;
+	text-align: center;
+	cursor: pointer;
+}
+.hidden {
+	display: none;
+}
+
+#advanced-form {
+	border: 1px #bbb dotted;
+	border-radius: 5px;
+	padding: 10px 0;
 }

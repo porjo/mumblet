@@ -4,33 +4,44 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 
-		<title>Mumble WebRTC Client</title>
+		<title>Mumbl</title>
 
 		<link href="app.css" rel="stylesheet">
 
 	</head>
 	<body>
 		<div class="container">
-			<h1>Mumble Client</h1>
+			<h1>Mumbl</h1>
 			<div id="input-form">
 				<table>
 					<tr>
-						<th>Server:</th>
-						<td><input type='text' size=50 id='hostname'></td>
+						<th>Mumble<br>URL:</th>
+						<td><textarea cols=80 rows=3 id='url' placeholder='mumble://'></textarea></td>
 					</tr>
 					<tr>
-						<th>Port:</th>
-						<td><input type='text' size=10 value="64738" id='port'></td>
-					</tr>
-					<tr>
-						<th>Username:</th>
-						<td><input type='text' size=15 id='username'></td>
-					</tr>
-					<tr>
-						<th>Channel:</th>
-						<td><input type='text' size=15 id='channel'></td>
+						<td colspan=2><div id='advanced-toggle'><span class='text'>Show Advanced</span><span class='text hidden'>Hide Advanced</span></div></td>
 					</tr>
 				</table>
+				<div id='advanced-form' class='hidden'>
+					<table>
+						<tr>
+							<th>Hostname:</th>
+							<td><input type='text' size=50 id='hostname'></td>
+						</tr>
+						<tr>
+							<th>Port:</th>
+							<td><input type='text' size=10 value="64738" id='port'></td>
+						</tr>
+						<tr>
+							<th>Username:</th>
+							<td><input type='text' size=15 id='username'></td>
+						</tr>
+						<tr>
+							<th>Channel:</th>
+							<td><input type='text' size=25 id='channel'></td>
+						</tr>
+					</table>
+				</div>
 				<button id='connect-button'>Connect</button>
 			</div>
 
@@ -40,7 +51,7 @@
 
 			</div>
 			<div id='footer'>
-				<a href='https://github.com/porjo/ytdl-web'>Github Project</a>
+				<a href='https://github.com/porjo/mumbl'>Github Project</a>
 			</div>
 		</div>
 

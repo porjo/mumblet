@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/pions/webrtc"
 	"github.com/porjo/gumble/gumble"
@@ -35,7 +37,7 @@ type MumbleClient struct {
 	Port     int
 	Username string
 	//Password string
-	Channel string
+	Channels []string
 
 	client *gumble.Client
 	config *gumble.Config
@@ -90,11 +92,16 @@ func (m *MumbleClient) Connect() error {
 		return err
 	}
 
-	channel := m.client.Channels.Find(m.Channel)
-	if channel != nil {
-		m.client.Self.Move(channel)
+	if len(m.client.Channels) > 0 {
+		channel := m.client.Channels.Find(m.Channels...)
+		if channel == nil {
+			m.logChan <- fmt.Sprintf("channel(s) '%s' not found, defaulting to root", m.Channels)
+		} else {
+			m.client.Self.Move(channel)
+			m.logChan <- fmt.Sprintf("joined channel '%s'", channel.Name)
+		}
 	}
-	//m.client.Self.SetDeafened(false)
+	m.client.Self.SetSelfMuted(true)
 
 	m.link = m.config.AttachAudio(m)
 
@@ -122,4 +129,36 @@ func (m *MumbleClient) OnAudioStream(e *gumble.AudioStreamEvent) {
 			}
 		}
 	}()
+}
+
+func (m *MumbleClient) ParseURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil {
+		return err
+	}
+
+	if u.Scheme != "mumble" {
+		return fmt.Errorf("invalid scheme")
+	}
+
+	h, p, _ := net.SplitHostPort(u.Host)
+
+	if h == "" {
+		m.Hostname = u.Host
+	} else {
+		m.Hostname = h
+	}
+	if p == "" {
+		m.Port = MumbleDefaultPort
+	} else {
+		m.Port, _ = strconv.Atoi(p)
+	}
+
+	m.Username = u.User.Username()
+	u.Path = strings.Trim(u.Path, " /")
+	m.Channels = strings.Split(u.Path, "/")
+
+	fmt.Printf("m %+v\n", m)
+
+	return nil
 }

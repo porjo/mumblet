@@ -40,6 +40,7 @@ type Msg struct {
 }
 
 type CmdConnect struct {
+	URL                string
 	Hostname           string
 	Port               int
 	Username           string
@@ -145,13 +146,13 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if msg.Key == "connect" {
-				conn := CmdConnect{}
-				err = json.Unmarshal(msg.Value, &conn)
+				cmd := CmdConnect{}
+				err = json.Unmarshal(msg.Value, &cmd)
 				if err != nil {
 					c.errChan <- err
 					continue
 				}
-				err := c.connectHandler(ctx, conn)
+				err := c.connectHandler(ctx, cmd)
 				if err != nil {
 					log.Printf("connectHandler error: %s\n", err)
 					c.errChan <- err
@@ -181,28 +182,35 @@ func (c *Conn) writeMsg(val interface{}) error {
 	return nil
 }
 
-func (c *Conn) connectHandler(ctx context.Context, conn CmdConnect) error {
+func (c *Conn) connectHandler(ctx context.Context, cmd CmdConnect) error {
 	var err error
 
 	c.mumble = NewMumbleClient(ctx, c.infoChan)
-	if conn.Username == "" {
-		return fmt.Errorf("username cannot be empty")
+	if cmd.URL != "" {
+		err = c.mumble.ParseURL(cmd.URL)
+		if err != nil {
+			return fmt.Errorf("cannot parse URL: %s", err)
+		}
+	} else {
+		if cmd.Username == "" {
+			return fmt.Errorf("username cannot be empty")
+		}
+		c.mumble.Username = cmd.Username
+		if cmd.Hostname == "" {
+			return fmt.Errorf("hostname cannot be empty")
+		}
+		c.mumble.Hostname = cmd.Hostname
+		if cmd.Port == 0 {
+			cmd.Port = MumbleDefaultPort
+		}
+		c.mumble.Port = cmd.Port
+		if cmd.Channel == "" {
+			return fmt.Errorf("channel cannot be empty")
+		}
+		c.mumble.Channels = []string{cmd.Channel}
 	}
-	c.mumble.Username = conn.Username
-	if conn.Hostname == "" {
-		return fmt.Errorf("hostname cannot be empty")
-	}
-	c.mumble.Hostname = conn.Hostname
-	if conn.Port == 0 {
-		conn.Port = MumbleDefaultPort
-	}
-	c.mumble.Port = conn.Port
-	if conn.Channel == "" {
-		return fmt.Errorf("channel cannot be empty")
-	}
-	c.mumble.Channel = conn.Channel
 
-	offer := conn.SessionDescription
+	offer := cmd.SessionDescription
 	c.peer, err = NewPC(offer, c.rtcStateChangeHandler)
 	if err != nil {
 		return err
@@ -266,5 +274,6 @@ func (c *Conn) rtcStateChangeHandler(connectionState ice.ConnectionState) {
 			c.errChan <- err
 			return
 		}
+		log.Printf("mumble disconnected\n")
 	}
 }
