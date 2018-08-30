@@ -23,9 +23,9 @@ import (
 	"strconv"
 
 	"github.com/pions/webrtc"
-	"layeh.com/gumble/gumble"
-	"layeh.com/gumble/gumbleutil"
-	_ "layeh.com/gumble/opus"
+	"github.com/porjo/gumble/gumble"
+	"github.com/porjo/gumble/gumbleutil"
+	_ "github.com/porjo/gumble/opus"
 )
 
 const MumbleDefaultPort = 64738
