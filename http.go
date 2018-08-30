@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -52,7 +53,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("WS: client connected %s\n", gconn.RemoteAddr())
 
-	quitChan := make(chan struct{})
+	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	c := &Conn{}
 	c.errChan = make(chan error)
@@ -61,12 +62,12 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.conn = gconn
 	defer c.conn.Close()
 
-	// TODO handle errors better
+	// TODO handle log/errors better
 	go func() {
 		for {
 			select {
-			case <-quitChan:
-				log.Printf("error goroutine quitting...\n")
+			case <-ctx.Done():
+				log.Printf("log goroutine quitting...\n")
 				return
 			case err := <-c.errChan:
 				log.Printf("errChan %s\n", err)
@@ -99,7 +100,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		pingCh := time.Tick(PingInterval)
 		for {
 			select {
-			case <-quitChan:
+			case <-ctx.Done():
 				log.Printf("ws ping goroutine quitting...\n")
 				return
 			case <-pingCh:
@@ -136,7 +137,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					c.errChan <- err
 					continue
 				}
-				err := c.connectHandler(conn)
+				err := c.connectHandler(ctx, conn)
 				if err != nil {
 					log.Printf("connectHandler error: %s\n", err)
 					c.errChan <- err
@@ -149,7 +150,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	close(quitChan)
+	ctxCancel()
 	log.Printf("WS: end handler\n")
 }
 
@@ -166,10 +167,10 @@ func (c *Conn) writeMsg(val interface{}) error {
 	return nil
 }
 
-func (c *Conn) connectHandler(conn CmdConnect) error {
+func (c *Conn) connectHandler(ctx context.Context, conn CmdConnect) error {
 	var err error
 
-	c.mumble = NewMumbleClient(c.infoChan)
+	c.mumble = NewMumbleClient(ctx, c.infoChan)
 	if conn.Username == "" {
 		return fmt.Errorf("username cannot be empty")
 	}
@@ -208,13 +209,18 @@ func (c *Conn) connectHandler(conn CmdConnect) error {
 		return err
 	}
 
-	for {
-		select {
-		case s := <-c.mumble.opusChan:
-			fmt.Printf("opusChan s %d\n", len(s.Data))
-			c.peer.track.Samples <- s
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("opusChan read goroutine quitting...\n")
+				return
+			case s := <-c.mumble.opusChan:
+				//fmt.Printf("opusChan s %d\n", len(s.Data))
+				c.peer.track.Samples <- s
+			}
 		}
-	}
+	}()
 
 	return nil
 }

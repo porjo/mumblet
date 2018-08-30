@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 
@@ -28,11 +30,13 @@ type MumbleClient struct {
 	opusChan chan webrtc.RTCSample
 
 	link gumble.Detacher
+	ctx  context.Context
 }
 
-func NewMumbleClient(logChan chan string) *MumbleClient {
+func NewMumbleClient(ctx context.Context, logChan chan string) *MumbleClient {
 	client := &MumbleClient{}
 	client.logChan = logChan
+	client.ctx = ctx
 	client.opusChan = make(chan webrtc.RTCSample)
 	return client
 }
@@ -92,12 +96,16 @@ func (m *MumbleClient) Disconnect() error {
 }
 
 func (m *MumbleClient) OnAudioStream(e *gumble.AudioStreamEvent) {
-	fmt.Printf("onaudiostream %+v\n", e)
-
 	go func() {
-		for p := range e.C {
-			rtcSample := webrtc.RTCSample{Data: p.OpusBuffer, Samples: p.OpusSamples}
-			m.opusChan <- rtcSample
+		for {
+			select {
+			case <-m.ctx.Done():
+				log.Printf("opusChan write gorouting quitting...\n")
+				return
+			case p := <-e.C:
+				rtcSample := webrtc.RTCSample{Data: p.OpusBuffer, Samples: p.OpusSamples}
+				m.opusChan <- rtcSample
+			}
 		}
 	}()
 }
