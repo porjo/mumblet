@@ -16,6 +16,18 @@ var sd_uri = loc.protocol + "//" + loc.host + path + "/sdp";
 
 $(function(){
 
+	var log = m => {
+		// strip html
+		var a = $("<div />").text(m).html();
+		$("#status").prepend("<div class='message'>" + a + '</div>');
+	}
+	var msg = m => {
+		var d = new Date(Date.now()).toLocaleString();
+		// strip html
+		var a = $("<div />").text(m.Message).html();
+		$("#messages").prepend("<div class='message'><span class='time'>" + d + "</span><span class='sender'>" + m.Sender + "</span><span class='message'>" + a + "</span></div>");
+	}
+
 	$("#advanced-toggle").click(function() {
 		$(this).find(".text").toggleClass('hidden');
 		$("#advanced-form").slideToggle();
@@ -23,6 +35,7 @@ $(function(){
 
 	$("#connect-button").click(function() {
 		if (ws.readyState === 1) {
+			log("js: Connecting to host");
 			$("#output").show();
 			var params = {};
 			params.Url = $("#url").val();
@@ -33,7 +46,6 @@ $(function(){
 			params.SessionDescription = pc.localDescription.sdp;
 			var val = {Key: 'connect', Value: params};
 			ws.send(JSON.stringify(val));
-			log("js: Connecting to host");
 		} else {
 			log("WS socket not ready");
 		}
@@ -45,17 +57,20 @@ $(function(){
 	*/
 
 	ws.onmessage = function (e)	{
-		var msg = JSON.parse(e.data);
-		if( 'Key' in msg ) {
-			switch (msg.Key) {
+		var wsMsg = JSON.parse(e.data);
+		if( 'Key' in wsMsg ) {
+			switch (wsMsg.Key) {
 				case 'info':
-					log("Info: " + msg.Value);
+					log("Info: " + wsMsg.Value);
+					break;
+				case 'msg':
+					msg(wsMsg.Value);
 					break;
 				case 'error':
-					log("Error: " + msg.Value);
+					log("Error: " + wsMsg.Value);
 					break;
 				case 'sd_answer':
-					connectRTC(msg.Value);
+					connectRTC(wsMsg.Value);
 					break;
 			}
 		}
@@ -78,9 +93,6 @@ $(function(){
 			}
 		]
 	})
-	var log = msg => {
-		$("#status").append(msg + '\n');
-	}
 
 	pc.ontrack = function (event) {
 		var el = document.createElement(event.track.kind)
@@ -88,7 +100,7 @@ $(function(){
 		el.autoplay = true
 		el.controls = true
 
-		$("#output-media").append(el);
+		$("#media").append(el);
 	}
 
 	pc.oniceconnectionstatechange = e => log("js: rtc state change, " + pc.iceConnectionState)

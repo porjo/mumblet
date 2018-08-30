@@ -42,18 +42,27 @@ type MumbleClient struct {
 	client *gumble.Client
 	config *gumble.Config
 
-	logChan  chan string
-	opusChan chan webrtc.RTCSample
+	logChan   chan string
+	msgChan   chan MumbleMsg
+	closeChan chan struct{}
+	opusChan  chan webrtc.RTCSample
 
 	link gumble.Detacher
 	ctx  context.Context
 }
 
-func NewMumbleClient(ctx context.Context, logChan chan string) *MumbleClient {
+type MumbleMsg struct {
+	Sender  string
+	Message string
+}
+
+func NewMumbleClient(ctx context.Context, msgChan chan MumbleMsg, logChan chan string) *MumbleClient {
 	client := &MumbleClient{}
 	client.logChan = logChan
+	client.msgChan = msgChan
 	client.ctx = ctx
 	client.opusChan = make(chan webrtc.RTCSample)
+	client.closeChan = make(chan struct{})
 	return client
 }
 
@@ -70,13 +79,18 @@ func (m *MumbleClient) Connect() error {
 
 	m.config.Attach(gumbleutil.Listener{
 		TextMessage: func(e *gumble.TextMessageEvent) {
-			m.logChan <- e.Message
+			msg := MumbleMsg{
+				Sender:  e.Sender.Name,
+				Message: e.Message,
+			}
+			m.msgChan <- msg
 		},
 		Connect: func(e *gumble.ConnectEvent) {
 			m.logChan <- fmt.Sprintf("mumble client, connected message: %s", *e.WelcomeMessage)
 		},
 		Disconnect: func(e *gumble.DisconnectEvent) {
 			m.logChan <- fmt.Sprint("mumble client, disconnected message")
+			close(m.closeChan)
 		},
 	})
 

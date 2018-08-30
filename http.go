@@ -34,7 +34,7 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-type Msg struct {
+type wsMsg struct {
 	Key   string
 	Value json.RawMessage
 }
@@ -55,6 +55,7 @@ type Conn struct {
 
 	errChan  chan error
 	infoChan chan string
+	msgChan  chan MumbleMsg
 }
 
 type wsHandler struct{}
@@ -66,16 +67,18 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
-	log.Printf("WS: client connected %s\n", gconn.RemoteAddr())
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	c := &Conn{}
 	c.errChan = make(chan error)
 	c.infoChan = make(chan string)
+	c.msgChan = make(chan MumbleMsg)
 	// wrap Gorilla conn with our conn so we can extend functionality
 	c.conn = gconn
 	defer c.conn.Close()
+
+	log.Printf("WS %x: client connected, addr %s\n", c.conn.RemoteAddr(), c.conn.RemoteAddr())
 
 	// TODO handle log/errors better
 	go func() {
@@ -90,7 +93,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					log.Printf("marshal err %s\n", err)
 				}
-				m := Msg{Key: "error", Value: j}
+				m := wsMsg{Key: "error", Value: j}
 				err = c.writeMsg(m)
 				if err != nil {
 					log.Printf("writemsg err %s\n", err)
@@ -101,7 +104,18 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					log.Printf("marshal err %s\n", err)
 				}
-				m := Msg{Key: "info", Value: j}
+				m := wsMsg{Key: "info", Value: j}
+				err = c.writeMsg(m)
+				if err != nil {
+					log.Printf("writemsg err %s\n", err)
+				}
+			case msg := <-c.msgChan:
+				log.Printf("msgChan %s\n", msg)
+				j, err := json.Marshal(msg)
+				if err != nil {
+					log.Printf("marshal err %s\n", err)
+				}
+				m := wsMsg{Key: "msg", Value: j}
 				err = c.writeMsg(m)
 				if err != nil {
 					log.Printf("writemsg err %s\n", err)
@@ -120,8 +134,9 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			case <-pingCh:
 				// WriteControl can be called concurrently
-				if err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait)); err != nil {
-					log.Printf("WS: ping client, err %s\n", err)
+				err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait))
+				if err != nil {
+					log.Printf("WS %x: ping client, err %s\n", c.conn.RemoteAddr(), err)
 					return
 				}
 			}
@@ -131,14 +146,14 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for {
 		msgType, raw, err := c.conn.ReadMessage()
 		if err != nil {
-			log.Printf("WS: ReadMessage err %s\n", err)
+			log.Printf("WS %x: ReadMessage err %s\n", c.conn.RemoteAddr(), err)
 			break
 		}
 
-		log.Printf("WS: read message %s\n", string(raw))
+		log.Printf("WS %x: read message %s\n", c.conn.RemoteAddr(), string(raw))
 
 		if msgType == websocket.TextMessage {
-			var msg Msg
+			var msg wsMsg
 			err = json.Unmarshal(raw, &msg)
 			if err != nil {
 				c.errChan <- err
@@ -166,7 +181,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctxCancel()
-	log.Printf("WS: end handler\n")
+	log.Printf("WS %x: end handler\n", c.conn.RemoteAddr())
 }
 
 func (c *Conn) writeMsg(val interface{}) error {
@@ -174,7 +189,7 @@ func (c *Conn) writeMsg(val interface{}) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("WS: write message %s\n", string(j))
+	log.Printf("WS %x: write message %s\n", c.conn.RemoteAddr(), string(j))
 	if err = c.conn.WriteMessage(websocket.TextMessage, j); err != nil {
 		return err
 	}
@@ -185,21 +200,21 @@ func (c *Conn) writeMsg(val interface{}) error {
 func (c *Conn) connectHandler(ctx context.Context, cmd CmdConnect) error {
 	var err error
 
-	c.mumble = NewMumbleClient(ctx, c.infoChan)
+	c.mumble = NewMumbleClient(ctx, c.msgChan, c.infoChan)
 	if cmd.URL != "" {
 		err = c.mumble.ParseURL(cmd.URL)
 		if err != nil {
 			return fmt.Errorf("cannot parse URL: %s", err)
 		}
 	} else {
-		if cmd.Username == "" {
-			return fmt.Errorf("username cannot be empty")
-		}
-		c.mumble.Username = cmd.Username
 		if cmd.Hostname == "" {
 			return fmt.Errorf("hostname cannot be empty")
 		}
 		c.mumble.Hostname = cmd.Hostname
+		if cmd.Username == "" {
+			return fmt.Errorf("username cannot be empty")
+		}
+		c.mumble.Username = cmd.Username
 		if cmd.Port == 0 {
 			cmd.Port = MumbleDefaultPort
 		}
@@ -226,7 +241,7 @@ func (c *Conn) connectHandler(ctx context.Context, cmd CmdConnect) error {
 	if err != nil {
 		return err
 	}
-	err = c.writeMsg(Msg{Key: "sd_answer", Value: j})
+	err = c.writeMsg(wsMsg{Key: "sd_answer", Value: j})
 	if err != nil {
 		return err
 	}
@@ -237,8 +252,10 @@ func (c *Conn) connectHandler(ctx context.Context, cmd CmdConnect) error {
 			case <-ctx.Done():
 				log.Printf("opusChan read goroutine quitting...\n")
 				return
+			case <-c.mumble.closeChan:
+				log.Printf("opusChan read goroutine quitting...\n")
+				return
 			case s := <-c.mumble.opusChan:
-				//fmt.Printf("opusChan s %d\n", len(s.Data))
 				c.peer.track.Samples <- s
 			}
 		}

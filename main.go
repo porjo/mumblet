@@ -1,3 +1,5 @@
+// Mumblet a web-based Mumble client
+
 /*
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +24,6 @@ import (
 )
 
 func main() {
-
 	webRoot := flag.String("webRoot", "html", "web root directory")
 	port := flag.Int("port", 8080, "listen on this port")
 	flag.Parse()
@@ -34,10 +35,9 @@ func main() {
 
 	http.Handle("/", http.FileServer(http.Dir(*webRoot)))
 
-	log.Printf("Listening on :%d...\n", *port)
+	log.Printf("Listening on port :%d\n", *port)
 	err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 }
