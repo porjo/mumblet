@@ -9,8 +9,8 @@ It uses websockets for signalling & WebRTC for audio.
 ### Usage
 
 ```
-go build
-./mumbl
+$ go get github.com/porjo/mumbl
+$ mumbl
 ```
 
-Point your web browser at http://<yourip>:8080/
+Point your web browser at http://localhost:8080/
