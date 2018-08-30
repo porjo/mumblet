@@ -169,8 +169,7 @@ func (c *Conn) writeMsg(val interface{}) error {
 func (c *Conn) connectHandler(conn CmdConnect) error {
 	var err error
 
-	c.mumble = &MumbleClient{}
-	c.mumble.logChan = c.infoChan
+	c.mumble = NewMumbleClient(c.infoChan)
 	if conn.Username == "" {
 		return fmt.Errorf("username cannot be empty")
 	}
@@ -240,11 +239,6 @@ func (c *Conn) rtcStateChangeHandler(connectionState ice.ConnectionState) {
 			return
 		}
 
-		err = c.peer.AddTrack()
-		if err != nil {
-			c.errChan <- err
-			return
-		}
 	case ice.ConnectionStateDisconnected:
 		log.Printf("ice disconnected\n")
 		err = c.mumble.Disconnect()

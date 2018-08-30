@@ -9,6 +9,7 @@ import (
 	"github.com/pions/webrtc"
 	"layeh.com/gumble/gumble"
 	"layeh.com/gumble/gumbleutil"
+	_ "layeh.com/gumble/opus"
 )
 
 const MumbleDefaultPort = 64738
@@ -29,6 +30,13 @@ type MumbleClient struct {
 	link gumble.Detacher
 }
 
+func NewMumbleClient(logChan chan string) *MumbleClient {
+	client := &MumbleClient{}
+	client.logChan = logChan
+	client.opusChan = make(chan webrtc.RTCSample)
+	return client
+}
+
 func (m *MumbleClient) IsConnected() bool {
 	return m.client != nil
 }
@@ -45,10 +53,10 @@ func (m *MumbleClient) Connect() error {
 			m.logChan <- e.Message
 		},
 		Connect: func(e *gumble.ConnectEvent) {
-			m.logChan <- fmt.Sprintf("mumble client connected message: %s", *e.WelcomeMessage)
+			m.logChan <- fmt.Sprintf("mumble client, connected message: %s", *e.WelcomeMessage)
 		},
 		Disconnect: func(e *gumble.DisconnectEvent) {
-			m.logChan <- fmt.Sprint("mumble client disconnected message")
+			m.logChan <- fmt.Sprint("mumble client, disconnected message")
 		},
 	})
 
@@ -84,11 +92,12 @@ func (m *MumbleClient) Disconnect() error {
 }
 
 func (m *MumbleClient) OnAudioStream(e *gumble.AudioStreamEvent) {
-	fmt.Printf("onaudiostream \n")
+	fmt.Printf("onaudiostream %+v\n", e)
 
-	for p := range e.C {
-		fmt.Printf("audio c range %d\n", len(p.OpusBuffer))
-		rtcSample := webrtc.RTCSample{Data: p.OpusBuffer, Samples: p.OpusSamples}
-		m.opusChan <- rtcSample
-	}
+	go func() {
+		for p := range e.C {
+			rtcSample := webrtc.RTCSample{Data: p.OpusBuffer, Samples: p.OpusSamples}
+			m.opusChan <- rtcSample
+		}
+	}()
 }
