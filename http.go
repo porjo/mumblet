@@ -24,6 +24,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pions/webrtc/pkg/ice"
+	"github.com/porjo/gumble/gumble"
 )
 
 const PingInterval = 10 * time.Second
@@ -53,9 +54,10 @@ type Conn struct {
 	conn   *websocket.Conn
 	mumble *MumbleClient
 
-	errChan  chan error
-	infoChan chan string
-	msgChan  chan MumbleMsg
+	errChan         chan error
+	infoChan        chan string
+	msgChan         chan MumbleMsg
+	mumbleStateChan chan gumble.State
 }
 
 type wsHandler struct{}
@@ -74,74 +76,16 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.errChan = make(chan error)
 	c.infoChan = make(chan string)
 	c.msgChan = make(chan MumbleMsg)
+	c.mumbleStateChan = make(chan gumble.State)
 	// wrap Gorilla conn with our conn so we can extend functionality
 	c.conn = gconn
 	defer c.conn.Close()
 
 	log.Printf("WS %x: client connected, addr %s\n", c.conn.RemoteAddr(), c.conn.RemoteAddr())
 
-	// TODO handle log/errors better
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				log.Printf("log goroutine quitting...\n")
-				return
-			case err := <-c.errChan:
-				log.Printf("errChan %s\n", err)
-				j, err := json.Marshal(err.Error())
-				if err != nil {
-					log.Printf("marshal err %s\n", err)
-				}
-				m := wsMsg{Key: "error", Value: j}
-				err = c.writeMsg(m)
-				if err != nil {
-					log.Printf("writemsg err %s\n", err)
-				}
-			case info := <-c.infoChan:
-				log.Printf("infoChan %s\n", info)
-				j, err := json.Marshal(info)
-				if err != nil {
-					log.Printf("marshal err %s\n", err)
-				}
-				m := wsMsg{Key: "info", Value: j}
-				err = c.writeMsg(m)
-				if err != nil {
-					log.Printf("writemsg err %s\n", err)
-				}
-			case msg := <-c.msgChan:
-				log.Printf("msgChan %s\n", msg)
-				j, err := json.Marshal(msg)
-				if err != nil {
-					log.Printf("marshal err %s\n", err)
-				}
-				m := wsMsg{Key: "msg", Value: j}
-				err = c.writeMsg(m)
-				if err != nil {
-					log.Printf("writemsg err %s\n", err)
-				}
-			}
-		}
-	}()
-
+	go c.LogHandler(ctx)
 	// setup ping/pong to keep connection open
-	go func() {
-		pingCh := time.Tick(PingInterval)
-		for {
-			select {
-			case <-ctx.Done():
-				log.Printf("ws ping goroutine quitting...\n")
-				return
-			case <-pingCh:
-				// WriteControl can be called concurrently
-				err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait))
-				if err != nil {
-					log.Printf("WS %x: ping client, err %s\n", c.conn.RemoteAddr(), err)
-					return
-				}
-			}
-		}
-	}()
+	go c.PingHandler(ctx)
 
 	for {
 		msgType, raw, err := c.conn.ReadMessage()
@@ -180,6 +124,7 @@ func (h *wsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	// this will trigger all goroutines to quit
 	ctxCancel()
 	log.Printf("WS %x: end handler\n", c.conn.RemoteAddr())
 }
@@ -200,7 +145,7 @@ func (c *Conn) writeMsg(val interface{}) error {
 func (c *Conn) connectHandler(ctx context.Context, cmd CmdConnect) error {
 	var err error
 
-	c.mumble = NewMumbleClient(ctx, c.msgChan, c.infoChan)
+	c.mumble = NewMumbleClient(ctx, c.msgChan, c.infoChan, c.mumbleStateChan)
 	if cmd.URL != "" {
 		err = c.mumble.ParseURL(cmd.URL)
 		if err != nil {
@@ -219,10 +164,10 @@ func (c *Conn) connectHandler(ctx context.Context, cmd CmdConnect) error {
 			cmd.Port = MumbleDefaultPort
 		}
 		c.mumble.Port = cmd.Port
-		if cmd.Channel == "" {
-			return fmt.Errorf("channel cannot be empty")
+		c.mumble.Channels = []string{}
+		if cmd.Channel != "" {
+			c.mumble.Channels = append(c.mumble.Channels, cmd.Channel)
 		}
-		c.mumble.Channels = []string{cmd.Channel}
 	}
 
 	offer := cmd.SessionDescription
@@ -247,13 +192,11 @@ func (c *Conn) connectHandler(ctx context.Context, cmd CmdConnect) error {
 	}
 
 	go func() {
+		defer log.Printf("opusChan read goroutine quitting...\n")
 		for {
 			select {
 			case <-ctx.Done():
-				log.Printf("opusChan read goroutine quitting...\n")
-				return
-			case <-c.mumble.closeChan:
-				log.Printf("opusChan read goroutine quitting...\n")
+				c.peer.Close()
 				return
 			case s := <-c.mumble.opusChan:
 				c.peer.track.Samples <- s
@@ -272,6 +215,7 @@ func (c *Conn) rtcStateChangeHandler(connectionState ice.ConnectionState) {
 	switch connectionState {
 	case ice.ConnectionStateConnected:
 		log.Printf("ice connected, config %s\n", c.peer.pc.RemoteDescription().Sdp)
+		c.infoChan <- "ice connected"
 
 		if c.mumble.IsConnected() {
 			c.errChan <- fmt.Errorf("mumble client already connected")
@@ -286,11 +230,94 @@ func (c *Conn) rtcStateChangeHandler(connectionState ice.ConnectionState) {
 
 	case ice.ConnectionStateDisconnected:
 		log.Printf("ice disconnected\n")
+
+		// non blocking channel write, as receiving goroutine may already have quit
+		select {
+		case c.infoChan <- "ice disconnected":
+		default:
+		}
 		err = c.mumble.Disconnect()
 		if err != nil {
 			c.errChan <- err
 			return
 		}
-		log.Printf("mumble disconnected\n")
+	}
+}
+
+func (c *Conn) LogHandler(ctx context.Context) {
+	defer log.Printf("log goroutine quitting...\n")
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-c.errChan:
+			j, err := json.Marshal(err.Error())
+			if err != nil {
+				log.Printf("marshal err %s\n", err)
+			}
+			m := wsMsg{Key: "error", Value: j}
+			err = c.writeMsg(m)
+			if err != nil {
+				log.Printf("writemsg err %s\n", err)
+			}
+			// end the WS session on error
+			c.conn.Close()
+		case info := <-c.infoChan:
+			j, err := json.Marshal(info)
+			if err != nil {
+				log.Printf("marshal err %s\n", err)
+			}
+			m := wsMsg{Key: "info", Value: j}
+			err = c.writeMsg(m)
+			if err != nil {
+				log.Printf("writemsg err %s\n", err)
+			}
+		case msg := <-c.msgChan:
+			j, err := json.Marshal(msg)
+			if err != nil {
+				log.Printf("marshal err %s\n", err)
+			}
+			m := wsMsg{Key: "msg", Value: j}
+			err = c.writeMsg(m)
+			if err != nil {
+				log.Printf("writemsg err %s\n", err)
+			}
+		case state := <-c.mumbleStateChan:
+			s := ""
+			switch state {
+			case gumble.StateConnected:
+			case gumble.StateSynced:
+				s = "connected"
+			case gumble.StateDisconnected:
+				s = "disconnected"
+			}
+			j, err := json.Marshal(s)
+			if err != nil {
+				log.Printf("marshal err %s\n", err)
+			}
+			m := wsMsg{Key: "mumble_state", Value: j}
+			err = c.writeMsg(m)
+			if err != nil {
+				log.Printf("writemsg err %s\n", err)
+			}
+		}
+	}
+}
+
+func (c *Conn) PingHandler(ctx context.Context) {
+	defer log.Printf("ws ping goroutine quitting...\n")
+	pingCh := time.Tick(PingInterval)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-pingCh:
+			// WriteControl can be called concurrently
+			err := c.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(WriteWait))
+			if err != nil {
+				log.Printf("WS %x: ping client, err %s\n", c.conn.RemoteAddr(), err)
+				return
+			}
+		}
 	}
 }

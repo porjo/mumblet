@@ -24,6 +24,10 @@ type WebRTCPeer struct {
 	track *webrtc.RTCTrack
 }
 
+func (w *WebRTCPeer) Close() error {
+	return w.pc.Close()
+}
+
 func NewPC(offerSd string, onStateChange func(connectionState ice.ConnectionState)) (*WebRTCPeer, error) {
 	// Setup the codecs you want to use.
 	// We'll use the default ones but you can also define your own

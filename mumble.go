@@ -43,8 +43,8 @@ type MumbleClient struct {
 	config *gumble.Config
 
 	logChan   chan string
+	stateChan chan gumble.State
 	msgChan   chan MumbleMsg
-	closeChan chan struct{}
 	opusChan  chan webrtc.RTCSample
 
 	link gumble.Detacher
@@ -56,13 +56,13 @@ type MumbleMsg struct {
 	Message string
 }
 
-func NewMumbleClient(ctx context.Context, msgChan chan MumbleMsg, logChan chan string) *MumbleClient {
+func NewMumbleClient(ctx context.Context, msgChan chan MumbleMsg, logChan chan string, stateChan chan gumble.State) *MumbleClient {
 	client := &MumbleClient{}
 	client.logChan = logChan
 	client.msgChan = msgChan
+	client.stateChan = stateChan
 	client.ctx = ctx
 	client.opusChan = make(chan webrtc.RTCSample)
-	client.closeChan = make(chan struct{})
 	return client
 }
 
@@ -86,11 +86,17 @@ func (m *MumbleClient) Connect() error {
 			m.msgChan <- msg
 		},
 		Connect: func(e *gumble.ConnectEvent) {
-			m.logChan <- fmt.Sprintf("mumble client, connected message: %s", *e.WelcomeMessage)
+			log.Printf("mumble client connected\n")
+			m.stateChan <- e.Client.State()
 		},
 		Disconnect: func(e *gumble.DisconnectEvent) {
-			m.logChan <- fmt.Sprint("mumble client, disconnected message")
-			close(m.closeChan)
+			log.Printf("mumble client disconnected\n")
+			// non blocking channel write, as receiving goroutine may already have quit
+			select {
+			case m.stateChan <- e.Client.State():
+
+			default:
+			}
 		},
 	})
 
@@ -168,11 +174,14 @@ func (m *MumbleClient) ParseURL(s string) error {
 		m.Port, _ = strconv.Atoi(p)
 	}
 
+	if u.User.Username() == "" {
+		return fmt.Errorf("username cannot be blank")
+	}
 	m.Username = u.User.Username()
 	u.Path = strings.Trim(u.Path, " /")
-	m.Channels = strings.Split(u.Path, "/")
-
-	fmt.Printf("m %+v\n", m)
+	if u.Path != "" {
+		m.Channels = strings.Split(u.Path, "/")
+	}
 
 	return nil
 }

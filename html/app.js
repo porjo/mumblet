@@ -69,6 +69,18 @@ $(function(){
 				case 'error':
 					log("Error: " + wsMsg.Value);
 					break;
+				case 'mumble_state':
+					switch(wsMsg.Value) {
+						case 'connected':
+							$("#input-form").hide();
+							$("#media").show();
+							break;
+						case 'disconnected':
+							$("#input-form").show();
+							$("#media").hide();
+							break;
+					}
+					break;
 				case 'sd_answer':
 					connectRTC(wsMsg.Value);
 					break;

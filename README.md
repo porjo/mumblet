@@ -8,7 +8,7 @@ It uses websockets for signalling & WebRTC for audio.
 
 ```
 $ go get github.com/porjo/mumblet
-$ ./mumblet -webRoot $GOPATH/src/github.com/porjo/mumblet/html -port 8080
+$ mumblet -webRoot $GOPATH/src/github.com/porjo/mumblet/html -port 8080
 ```
 
 Point your web browser at http://localhost:8080/
